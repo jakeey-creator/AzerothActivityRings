@@ -1,0 +1,14 @@
+## Interface: 16001, 11509, 11508, 20505, 50503, 120100, 120001
+## Title: |cffff8000Azeroth|r |cffa335eeActivity|r |cff0070ddRings|r
+## Notes: Dein Abenteurer-Tracker für Azeroth: Schritte, Farm-Zeit, Quests, drei Ringe, Serien und Auszeichnungen.
+## Author: Jakeey
+## Version: 1.1.1
+## SavedVariables: AAR_DB
+## IconTexture: Interface\Icons\INV_Jewelry_Ring_03
+
+Core.lua
+Skin.lua
+Ring.lua
+Medals.lua
+Watch.lua
+Panel.lua
