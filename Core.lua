@@ -327,13 +327,92 @@ local playerGUID
 local handlers = {}
 
 local addonLoaded, loggedIn, started
+local settingsStamp = -1 -- lastSeen der Quelle, deren Einstellungen gelten
 
-local function UseDB(t)
-    db = t
+-- ------------------------------------------------------------
+-- Speicher
+-- Der Fortschritt liegt doppelt: accountweit (AAR_DB) und pro Charakter
+-- (AAR_CharDB). Beim Start wird alles, was WoW geladen hat, in eine frische
+-- Datenbank zusammengeführt. Gleiche Herkunft (gleiches "created") wird per
+-- Maximum vereint, fremde Herkunft (z. B. eine versehentlich neu angelegte
+-- Datenbank) wird addiert. So geht nichts verloren und nichts zählt doppelt.
+-- ------------------------------------------------------------
+
+local function Combine(a, b, same)
+    a, b = tonumber(a) or 0, tonumber(b) or 0
+    if same then return math.max(a, b) end
+    return a + b
+end
+
+local function MergeDay(d, s, same)
+    for k, v in pairs(s) do
+        if k == "hourly" and type(v) == "table" then
+            for h = 1, 24 do d.hourly[h] = Combine(d.hourly[h], v[h], same) end
+        elseif k == "closed" and type(v) == "table" then
+            for rk, t in pairs(v) do d.closed[rk] = d.closed[rk] and math.min(d.closed[rk], t) or t end
+        elseif k == "medals" and type(v) == "table" then
+            for id in pairs(v) do d.medals[id] = true end
+        elseif k == "perfect" then
+            d.perfect = d.perfect and math.min(d.perfect, v) or v
+        elseif k == "maxBpm" then
+            d.maxBpm = math.max(d.maxBpm or 0, v)
+        elseif k == "coached" then
+            d.coached = d.coached or v
+        elseif type(v) == "number" then
+            d[k] = Combine(d[k], v, same)
+        elseif d[k] == nil then
+            d[k] = v
+        end
+    end
+end
+
+-- Führt `src` in `db` zusammen. Rückgabe: true, wenn Daten fremder Herkunft addiert wurden.
+local function MergeDB(src)
+    if type(src) ~= "table" or src == db then return false end
+    local same = src.created == db.created
+    if type(src.created) == "number" and src.created < db.created then db.created = src.created end
+    -- Einstellungen und Ziele der zuletzt gespielten Quelle übernehmen
+    local seen = type(src.session) == "table" and tonumber(src.session.lastSeen) or 0
+    if seen > settingsStamp then
+        settingsStamp = seen
+        if type(src.settings) == "table" then db.settings = src.settings end
+        if type(src.goals) == "table" then db.goals = src.goals end
+    end
+    for key, s in pairs(type(src.days) == "table" and src.days or {}) do
+        if type(s) == "table" then
+            if db.days[key] then MergeDay(db.days[key], s, same) else db.days[key] = s end
+        end
+    end
+    for k, v in pairs(type(src.totals) == "table" and src.totals or {}) do
+        if type(v) == "number" then db.totals[k] = Combine(db.totals[k], v, same) end
+    end
+    for id, rec in pairs(type(src.medals) == "table" and src.medals or {}) do
+        local m = db.medals[id]
+        if not m then
+            db.medals[id] = rec
+        else
+            m.count = Combine(m.count, rec.count, same)
+            m.first = math.min(m.first or rec.first, rec.first or m.first)
+            m.last = math.max(m.last or rec.last, rec.last or m.last)
+        end
+    end
+    local st, ss = db.streak, type(src.streak) == "table" and src.streak or {}
+    st.best = math.max(st.best or 0, ss.best or 0)
+    if ss.last and (not st.last or ss.last > st.last) then
+        st.last, st.current = ss.last, ss.current
+    elseif ss.last and ss.last == st.last then
+        st.current = math.max(st.current or 0, ss.current or 0)
+    end
+    db.rescued = db.rescued or src.rescued
     Merge(db, DEFAULTS)
-    db.created = db.created or time()
-    ns.db = db
+    return not same
+end
+
+-- Beide Speicherorte zeigen immer auf dieselbe Datenbank
+local function Bind()
     AAR_DB = db
+    AAR_CharDB = db
+    ns.db = db
 end
 
 local function CountDays(t)
@@ -342,31 +421,19 @@ local function CountDays(t)
     return n
 end
 
--- Zahlen aus `src` auf `dst` addieren (für nachträglich geladene Daten)
-local function AddNumbers(dst, src)
-    for k, v in pairs(src) do
-        if k == "maxBpm" then
-            dst[k] = math.max(type(dst[k]) == "number" and dst[k] or 0, v)
-        elseif type(v) == "number" and k ~= "key" then
-            dst[k] = (type(dst[k]) == "number" and dst[k] or 0) + v
-        elseif type(v) == "table" and k ~= "goals" and k ~= "closed" and k ~= "medals" then
-            if type(dst[k]) ~= "table" then dst[k] = {} end
-            AddNumbers(dst[k], v)
+-- Sicherheitsnetz: Setzt WoW gespeicherte Daten erst nach unserem Start ein,
+-- werden sie nachträglich übernommen.
+local function AdoptLateData()
+    if not db then return end
+    local found = false
+    for _, t in ipairs({ AAR_DB, AAR_CharDB }) do
+        if type(t) == "table" and t ~= db then
+            MergeDB(t)
+            found = true
         end
     end
-end
-
--- Sicherheitsnetz: Setzt WoW die gespeicherten Daten erst nach unserem Start ein,
--- übernehmen wir sie und rechnen die bisherigen Werte dieser Sitzung dazu.
-local function AdoptLateData()
-    if not db or type(AAR_DB) ~= "table" or AAR_DB == db then return end
-    local late, session = AAR_DB, db
-    local key = ns.DayKey()
-    UseDB(late)
-    if session.days[key] then
-        if db.days[key] then AddNumbers(db.days[key], session.days[key]) else db.days[key] = session.days[key] end
-    end
-    AddNumbers(db.totals, session.totals)
+    if not found then return end
+    Bind()
     ns.Print(string.format("Gespeicherter Fortschritt nachgeladen (%d Tage).", CountDays(db)))
     ns:Fire("Settings")
     ns:Evaluate()
@@ -375,12 +442,28 @@ end
 local function Start()
     if started or not addonLoaded or not loggedIn then return end
     started = true
-    local fresh = type(AAR_DB) ~= "table"
-    UseDB(fresh and {} or AAR_DB)
-    if fresh then
-        ns.Print("Willkommen! Neue Datenbank angelegt.")
-    else
-        ns.Print(string.format("Fortschritt geladen (%d Tage).", CountDays(db)))
+
+    local account, char = AAR_DB, AAR_CharDB
+    db = {}
+    Merge(db, DEFAULTS)
+    db.created = time()
+    MergeDB(account)
+    MergeDB(char)
+    -- Rettungsdaten nur ein einziges Mal einrechnen (Markierung wandert in jedem Speicher mit)
+    local rescued = false
+    if ns.RESCUE and not db.rescued then
+        MergeDB(ns.RESCUE)
+        db.rescued = true
+        rescued = true
+    end
+    Bind()
+
+    ns.Print(string.format("Speicher: Account %s · Charakter %s · %d Tage, %s Schritte gesamt",
+        type(account) == "table" and "|cff40ff40OK|r" or "|cffff4040leer|r",
+        type(char) == "table" and "|cff40ff40OK|r" or "|cffff4040leer|r",
+        CountDays(db), ns.Num(db.totals.steps)))
+    if rescued then
+        ns.Print("|cffffd200Verlorener Fortschritt vom 24.09. (15:45 Uhr) wiederhergestellt.|r")
     end
     playerGUID = UnitGUID("player")
 
@@ -402,6 +485,12 @@ local function Start()
     C_Timer.After(5, AdoptLateData)
 end
 
+function ns.StorageStatus()
+    ns.Print(string.format("Account-Speicher: %s · Charakter-Speicher: %s · Datenbank vom %s",
+        AAR_DB == db and "aktiv" or "getrennt", AAR_CharDB == db and "aktiv" or "getrennt",
+        date("%d.%m.%Y %H:%M", db.created)))
+end
+
 -- Gespeicherte Daten sind erst ab ADDON_LOADED sicher da, die Spielwelt erst ab PLAYER_LOGIN.
 -- Gestartet wird, sobald beides passiert ist – egal in welcher Reihenfolge.
 function handlers.ADDON_LOADED(name)
@@ -420,8 +509,11 @@ function handlers.PLAYER_ENTERING_WORLD()
 end
 
 function handlers.PLAYER_LOGOUT()
-    if db then db.session.lastSeen = time() end
+    if not db then return end
+    db.session.lastSeen = time()
+    Bind()
 end
+
 
 function handlers.QUEST_TURNED_IN()
     local d = ns.Today()
@@ -496,6 +588,7 @@ local HELP = {
     "|cffffd200/aar face voll/minimal/daten|r – Zifferblatt wechseln",
     "|cffffd200/aar scale <0.5-2>|r · |cffffd200/aar lock|r · |cffffd200/aar reset|r (Position)",
     "|cffffd200/aar sound|r · |cffffd200/aar erinnerung|r – an/aus",
+    "|cffffd200/aar status|r – zeigt, ob der Speicher richtig verbunden ist",
 }
 
 SLASH_AZEROTHACTIVITYRINGS1 = "/aar"
@@ -530,6 +623,8 @@ SlashCmdList.AZEROTHACTIVITYRINGS = function(msg)
     elseif cmd == "reset" then
         s.point = nil
         ns:Fire("Settings")
+    elseif cmd == "status" then
+        ns.StorageStatus()
     elseif cmd == "sound" then
         s.sound = not s.sound
         ns.Print("Sounds " .. (s.sound and "an" or "aus") .. ".")

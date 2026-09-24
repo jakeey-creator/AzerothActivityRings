@@ -2,11 +2,13 @@
 ## Title: |cffff8000Azeroth|r |cffa335eeActivity|r |cff0070ddRings|r
 ## Notes: Dein Abenteurer-Tracker für Azeroth: Schritte, Farm-Zeit, Quests, drei Ringe, Serien und Auszeichnungen.
 ## Author: Jakeey
-## Version: 1.1.1
+## Version: 1.2.0
 ## SavedVariables: AAR_DB
+## SavedVariablesPerCharacter: AAR_CharDB
 ## IconTexture: Interface\Icons\INV_Jewelry_Ring_03
 
 Core.lua
+Rescue.lua
 Skin.lua
 Ring.lua
 Medals.lua
