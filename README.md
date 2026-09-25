@@ -44,3 +44,7 @@ Klick auf die Uhr öffnet die Details. Ziehen verschiebt sie, Shift + Mausrad ä
 ## Kompatibilität
 
 Geschrieben für WoW Classic Era (1.15.x) und Classic Beta (1.60.x). Die TOC-Datei enthält außerdem Interface-Nummern für TBC, MoP Classic und Retail. Getestet wurde es bisher nur auf Classic Era und Classic Beta.
+
+## Patch Notes
+
+Alle Änderungen stehen in der [CHANGELOG.md](CHANGELOG.md).
