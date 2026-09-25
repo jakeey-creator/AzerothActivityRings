@@ -50,6 +50,39 @@ local function IsSecret(v)
 end
 ns.IsSecret = IsSecret
 
+-- Neuere Clients (Midnight, Classic Beta in Bosskämpfen) liefern manche Werte als
+-- "geheim": Add-ons dürfen sie weder testen, vergleichen noch damit rechnen.
+-- Jede Spielabfrage läuft deshalb über diese Helfer, die dann einen sicheren
+-- Ersatzwert liefern, statt einen Lua-Fehler auszulösen.
+local function Flag(v, fallback)
+    if IsSecret(v) then return fallback end
+    return v and true or false
+end
+
+function ns.SafeNumber(v)
+    if IsSecret(v) or type(v) ~= "number" then return 0 end
+    return v
+end
+
+function ns.InCombat()
+    local v = UnitAffectingCombat("player")
+    if not IsSecret(v) then return v and true or false end
+    -- Ersatz: Kampfsperre der Oberfläche ist nicht geheim
+    return Flag(InCombatLockdown and InCombatLockdown(), false)
+end
+
+function ns.IsAFK() return Flag(UnitIsAFK("player"), false) end
+function ns.IsDead() return Flag(UnitIsDeadOrGhost("player"), false) end
+function ns.OnTaxi() return Flag(UnitOnTaxi("player"), false) end
+function ns.IsResting() return Flag(IsResting(), false) end
+function ns.Speed() return ns.SafeNumber(GetUnitSpeed("player")) end
+
+function ns.IsChanneling()
+    local name = UnitChannelInfo("player")
+    if IsSecret(name) then return false end
+    return name ~= nil
+end
+
 local function Merge(dst, src)
     for k, v in pairs(src) do
         if type(v) == "table" then
@@ -217,15 +250,16 @@ local lastEval = 0
 ns.lastMove = GetTime()
 
 function ns.IsActive()
-    if UnitIsAFK("player") or UnitIsDeadOrGhost("player") then return false end
-    if UnitAffectingCombat("player") then return true end
+    if ns.IsAFK() or ns.IsDead() then return false end
+    if ns.InCombat() then return true end
     if GetTime() < activeUntil then return true end
-    if UnitChannelInfo("player") then return true end -- Angeln & Co.
+    if ns.IsChanneling() then return true end -- Angeln & Co.
     return false
 end
 
 function ns.IsRiding()
-    return IsMounted() or (UnitInVehicle and UnitInVehicle("player")) or false
+    if Flag(IsMounted(), false) then return true end
+    return UnitInVehicle ~= nil and Flag(UnitInVehicle("player"), false)
 end
 
 local function Tick(dt)
@@ -233,8 +267,8 @@ local function Tick(dt)
     local t = db.totals
     d.online = d.online + dt
 
-    local speed = GetUnitSpeed("player")
-    if speed and not IsSecret(speed) and speed > 0 and not UnitOnTaxi("player") then
+    local speed = ns.Speed()
+    if speed > 0 and not ns.OnTaxi() then
         local yards = speed * dt
         local steps = yards / ns.STRIDE
         if ns.IsRiding() then
@@ -284,7 +318,7 @@ end)
 local remindedHour
 local function Reminders()
     if not db.settings.remind then return end
-    if UnitAffectingCombat("player") or UnitIsAFK("player") then return end
+    if ns.InCombat() or ns.IsAFK() then return end
     local d = ns.Today()
     local t = date("*t")
 
@@ -315,6 +349,9 @@ ev:RegisterEvent("PLAYER_ENTERING_WORLD")
 ev:RegisterEvent("PLAYER_LOGOUT")
 ev:RegisterEvent("QUEST_TURNED_IN")
 ev:RegisterEvent("ENCOUNTER_END")
+if C_EventUtils and C_EventUtils.IsEventValid and C_EventUtils.IsEventValid("BOSS_KILL") then
+    ev:RegisterEvent("BOSS_KILL")
+end
 ev:RegisterEvent("LOOT_OPENED")
 ev:RegisterEvent("PLAYER_REGEN_ENABLED")
 ev:RegisterEvent("PLAYER_LEVEL_UP")
@@ -522,13 +559,26 @@ function handlers.QUEST_TURNED_IN()
     ns:Evaluate()
 end
 
+-- Bosse: ENCOUNTER_END (Erfolg) und, wo vorhanden, BOSS_KILL. Beide können für
+-- denselben Boss kommen und ihre Werte können geheim sein; gezählt wird einmal.
+local lastBossKill = -100
+
+local function CountBoss()
+    if GetTime() - lastBossKill < 15 then return end
+    lastBossKill = GetTime()
+    local d = ns.Today()
+    d.bosses = d.bosses + 1
+    db.totals.bosses = db.totals.bosses + 1
+    ns:Evaluate()
+end
+
 function handlers.ENCOUNTER_END(_, _, _, _, success)
-    if success == 1 or success == true then
-        local d = ns.Today()
-        d.bosses = d.bosses + 1
-        db.totals.bosses = db.totals.bosses + 1
-        ns:Evaluate()
-    end
+    if IsSecret(success) then return end -- nicht lesbar: BOSS_KILL übernimmt
+    if success == 1 or success == true then CountBoss() end
+end
+
+function handlers.BOSS_KILL()
+    CountBoss()
 end
 
 function handlers.LOOT_OPENED()
@@ -548,6 +598,7 @@ end
 
 function handlers.COMBAT_LOG_EVENT_UNFILTERED()
     local _, sub, _, src = CombatLogGetCurrentEventInfo()
+    if IsSecret(sub) or IsSecret(src) then return end
     if sub == "PARTY_KILL" and src == playerGUID then
         local d = ns.Today()
         d.kills = d.kills + 1

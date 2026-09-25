@@ -106,14 +106,13 @@ end
 local bpm, beatPhase = 64, 0
 
 local function TargetBPM()
-    if UnitIsDeadOrGhost("player") then return 0 end
-    local target = IsResting() and 58 or 64
-    local speed = GetUnitSpeed("player") or 0
-    if ns.IsSecret(speed) then speed = 0 end
-    if speed > 0 and not UnitOnTaxi("player") then
+    if ns.IsDead() then return 0 end
+    local target = ns.IsResting() and 58 or 64
+    local speed = ns.Speed()
+    if speed > 0 and not ns.OnTaxi() then
         target = ns.IsRiding() and 74 or (68 + speed * 2.6)
     end
-    if UnitAffectingCombat("player") then
+    if ns.InCombat() then
         target = 118
         local hp, max = UnitHealth("player"), UnitHealthMax("player")
         if not ns.IsSecret(hp) and not ns.IsSecret(max) and max > 0 then
@@ -179,7 +178,7 @@ end
 local function Clock()
     ui.time:SetText(date("%H:%M"))
     ui.session:SetText((ns.Duration(time() - ns.db.session.start):gsub(" h", ""):gsub(" Min%.", "m")))
-    ui.gold:SetText(ns.Short(math.floor(GetMoney() / 10000)))
+    ui.gold:SetText(ns.Short(math.floor(ns.SafeNumber(GetMoney()) / 10000)))
 
     local target = TargetBPM()
     bpm = bpm + (target - bpm) * 0.3
